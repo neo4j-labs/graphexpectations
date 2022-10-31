@@ -23,7 +23,7 @@ if sys.version_info[:2] < (3, 6):
 if __name__ == "__main__":
     setup(
         name="graphexpectations",
-        version="0.0.1b0",
+        version="0.0.4b0",
         author="Jesús Barrasa",
         author_email="jbarrasa@outlook.com",
         description="User friendly utilities to create data quality rules on a Neo4j graph",

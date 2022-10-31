@@ -31,6 +31,10 @@ class Suite():
         return count(name) = 1 as shacl_installed 
         '''
 
+        graph_config_present = '''
+                MATCH (n:_GraphConfig) RETURN count(n) > 0 as gc_present ; 
+                '''
+
         cypher_deploy_shapes = '''
         call n10s.validation.shacl.import.inline($payload,"Turtle") yield target 
         return count(*) as shapes_deployed ; 
@@ -40,12 +44,19 @@ class Suite():
             results = session.read_transaction(
                 lambda tx: tx.run(cypher_check_n10s).data())
             if (results[0]["shacl_installed"]):
+
+                results = session.read_transaction(
+                    lambda tx: tx.run(graph_config_present).data())
+                gc_present = False
+                if (results[0]["gc_present"]):
+                    gc_present = True
+
                 results = session.write_transaction(
                     lambda tx: tx.run(cypher_deploy_shapes,
-                        payload=self.__graph__.serialize(format="turtle").decode('UTF-8')).data())
+                        payload=self.__graph__.serialize(format="turtle")).data())
                 if (results[0]["shapes_deployed"]):
                     print("context successfully bound to DB")
-                    return Context(driver,db_name)
+                    return Context(driver,db_name, gc_present)
                 else:
                     raise ("There was a problem deploying the expectations to the DB")
             else:
@@ -54,22 +65,28 @@ class Suite():
 
     def print_suite(self):
         print("Expectations in this Suite include " + str(len(self.__graph__)) + " triples:")
-        print(self.__graph__.serialize(format="turtle").decode('UTF-8'))
+        print(self.__graph__.serialize(format="turtle")) #.decode('UTF-8'))
 
     def serialise(self):
-        return self.__graph__.serialize(format="turtle").decode('UTF-8')
+        return self.__graph__.serialize(format="turtle") #.decode('UTF-8')
 
 
 
 class Context():
 
-    def __init__(self, driver=None, db_name=None):
+    def __init__(self, driver=None, db_name=None, gc_present=False):
         self.__db_driver___ = driver
         self.__db_name___ = db_name
+        self.__gc_present___ = gc_present
 
     def run(self):
-        cypher_query = '''
+        infix = " return focusNode as node, " if self.__gc_present___ else " match (n) where id(n) = focusNode return n as node,"
+        cypher_query = f'''
         call n10s.validation.shacl.validate() 
+        yield focusNode, nodeType, propertyShape, offendingValue, resultPath, severity, resultMessage, customMessage
+        {infix} nodeType, n10s.rdf.getIRILocalName(propertyShape) as violationType, offendingValue, 
+               resultPath as schemaElement, n10s.rdf.getIRILocalName(severity) as severity, resultMessage as comment, 
+               customMessage as msg
         '''
 
         with self.__db_driver___.session(database=self.__db_name___) as session:
@@ -81,7 +98,7 @@ class Context():
 
 class Set():
 
-    def __init__(self, nodeType=None, query=None):
+    def __init__(self, nodeType=None, query=None, message=None):
         self.g = Graph()
         self.shapeId = BNode()  # URIRef(ex + nodeType )
         self.g.add((self.shapeId, RDF.type, shacl.NodeShape))
@@ -93,6 +110,8 @@ class Set():
         else:
             self.g.add((self.shapeId, shacl.targetQuery, Literal("true")))
 
+        if(message):
+            self.g.add((self.shapeId, shacl.message, Literal(message)))
 
     def _graph(self):
         return self.g
@@ -117,13 +136,14 @@ class Set():
             propertyId = self.__init_property_shape(URIRef(neo + property), severity, message, False)
             self.g.add((propertyId, shacl.datatype, self.__getXSDType(datatype)))
 
+    def expect_number_of_property_values_to_be_between(self, property=None, min=None, max=None, severity=None, message=None):
 
-    def expect_outgoing_relationship_to_connect_to_nodes_of_type(self, relationship=None, targetType=None, severity=None, message=None):
-
-        if (relationship and targetType):
-            propertyId = self.__init_property_shape(URIRef(neo + relationship), severity, message, False)
-            self.g.add((propertyId, URIRef(shacl + "class"), URIRef(neo + targetType)))
-
+        if (property and (min or max)):
+            propertyId = self.__init_property_shape(URIRef(neo + property), severity, message, False)
+            if (min):
+                self.g.add((propertyId, shacl.minCount, Literal(min)))
+            if (max):
+                self.g.add((propertyId, shacl.maxCount, Literal(max)))
 
     def expect_number_of_outgoing_relationship_to_be_between(self, relationship=None, min=None, max=None, severity=None, message=None):
 
@@ -155,7 +175,7 @@ class Set():
         if (property and valueList):
             propertyId = self.__init_property_shape(URIRef(neo + property), severity, message, False)
             bnode = BNode()
-            self.g.add(propertyId, URIRef(shacl + "in"), bnode)
+            self.g.add((propertyId, URIRef(shacl + "in"), bnode))
             # ...because rdflib does not have a method to pass a list :(
             self.__build_rdf_list(bnode, URIRef(shacl + "not"), valueList, True)
 
@@ -173,10 +193,10 @@ class Set():
             propertyId = self.__init_property_shape(URIRef(neo + property), severity, message, False)
             self.g.add((propertyId, shacl.pattern, Literal(regex)))
 
-    def expect_outgoing_relationship_to_connect_to_nodes_of_type(self, relationship=None, nodeType=None, severity=None, message=None):
-        if (relationship and nodeType):
+    def expect_outgoing_relationship_to_connect_to_nodes_of_type(self, relationship=None, targetType=None, severity=None, message=None):
+        if (relationship and targetType):
             propertyId = self.__init_property_shape(URIRef(neo + relationship), severity, message, False)
-            self.g.add((propertyId, URIRef(shacl + "class"), URIRef(neo + nodeType)))
+            self.g.add((propertyId, URIRef(shacl + "class"), URIRef(neo + targetType)))
 
     # def expect_outgoing_relationship_to_connect_to_nodes_of_type_different_from(self, relationship=None, nodeType=None, severity=None, message=None):
     #     # not supported. Q: is it really needed?
@@ -219,10 +239,19 @@ class Set():
         if (relationship and targetTypes):
             propertyId = self.__init_property_shape(URIRef(neo + relationship), severity, message, False)
             bnode = BNode()
-            self.g.add(propertyId, URIRef(shacl + "in"), bnode)
+            self.g.add((propertyId, URIRef(shacl + "in"), bnode))
             # ...because rdflib does not have a method to pass a list :(
             self.__build_rdf_list(bnode, URIRef(shacl + "not"), targetTypes, False)
 
+    def expect_key_is_relationship(self, key=None, severity=None, message=None):
+        if (key):
+            propertyId = self.__init_property_shape(URIRef(neo + key), severity, message, False)
+            self.g.add((propertyId, shacl.nodeKind, shacl.IRI))
+
+    def expect_key_is_property(self, key=None, severity=None, message=None):
+        if (key):
+            propertyId = self.__init_property_shape(URIRef(neo + key), severity, message, False)
+            self.g.add((propertyId, shacl.nodeKind, shacl.Literal))
 
     def __build_rdf_list(self, rootResource, predicate, valueList, isLiteralList):
 
@@ -248,10 +277,10 @@ class Set():
                         #if it's also first (one elem list)
                         currentBNode = BNode()
                         self.g.add((rootResource, predicate, currentBNode))
-                    newBNode = BNode()
-                    self.g.add((currentBNode, RDF.rest, newBNode))
-                    self.g.add((newBNode, RDF.first , Literal(value) if isLiteralList else URIRef(neo + value)))
-                    self.g.add((newBNode, RDF.rest, RDF.nil))
+                    #newBNode = BNode()
+                    #self.g.add((currentBNode, RDF.rest, newBNode))
+                    self.g.add((currentBNode, RDF.first , Literal(value) if isLiteralList else URIRef(neo + value)))
+                    self.g.add((currentBNode, RDF.rest, RDF.nil))
 
     def __init_property_shape(self, targetProperty, severity, message, inverse):
         propertyId = BNode()
@@ -291,7 +320,7 @@ class Set():
 
     def print_set(self):
         print("Expectations in this Set contain " + str(len(self.g)) + " triples")
-        print(self.g.serialize(format="turtle").decode('UTF-8'))
+        print(self.g.serialize(format="turtle")) #.decode('UTF-8'))
 
     def serialise(self):
-        return self.g.serialize(format="turtle").decode('UTF-8')
+        return self.g.serialize(format="turtle") #.decode('UTF-8')

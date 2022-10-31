@@ -23,7 +23,7 @@ if sys.version_info[:2] < (3, 6):
 if __name__ == "__main__":
     setup(
         name="graphexpectations",
-        version="0.0.2a",
+        version="0.0.1b0",
         author="Jesús Barrasa",
         author_email="jbarrasa@outlook.com",
         description="User friendly utilities to create data quality rules on a Neo4j graph",
@@ -33,7 +33,7 @@ if __name__ == "__main__":
         platforms="All",
         url="https://github.com/neo4j-labs/graphexpectations",
         install_requires=[
-            'rdflib >= 5.0.0','neo4j >= 4.1.0',
+            'rdflib >= 6.0.0','neo4j >= 4.4.0',
         ],
         packages=find_packages(),
         zip_safe=False

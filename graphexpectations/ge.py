@@ -1,5 +1,6 @@
 from neo4j import GraphDatabase, basic_auth
 from rdflib import Namespace, Literal, RDF, Graph, BNode, XSD, URIRef
+import re
 
 # Namespaces
 shacl = Namespace("http://www.w3.org/ns/shacl#")
@@ -26,7 +27,7 @@ class Suite():
             auth=basic_auth(db_usr, db_pwd))
 
         cypher_check_n10s = '''
-        call dbms.procedures() yield name 
+        show procedures yield name 
         where name starts with "n10s.validation.shacl.import.fetch" 
         return count(name) = 1 as shacl_installed 
         '''
@@ -65,10 +66,10 @@ class Suite():
 
     def print_suite(self):
         print("Expectations in this Suite include " + str(len(self.__graph__)) + " triples:")
-        print(self.__graph__.serialize(format="turtle")) #.decode('UTF-8'))
+        print(self.__graph__.serialize(format="turtle"))
 
     def serialise(self):
-        return self.__graph__.serialize(format="turtle") #.decode('UTF-8')
+        return self.__graph__.serialize(format="turtle")
 
 
 
@@ -79,22 +80,39 @@ class Context():
         self.__db_name___ = db_name
         self.__gc_present___ = gc_present
 
-    def run(self):
+    def run(self, onCollection=None):
+
         infix = " return focusNode as node, " if self.__gc_present___ else " match (n) where id(n) = focusNode return n as node,"
-        cypher_query = f'''
-        call n10s.validation.shacl.validate() 
-        yield focusNode, nodeType, propertyShape, offendingValue, resultPath, severity, resultMessage, customMessage
-        {infix} nodeType, n10s.rdf.getIRILocalName(propertyShape) as violationType, offendingValue, 
-               resultPath as schemaElement, n10s.rdf.getIRILocalName(severity) as severity, resultMessage as comment, 
-               customMessage as msg
-        '''
+
+        if onCollection:
+            #this is not perfect but should be good enough
+            query_parts = re.split("return", onCollection, flags=re.IGNORECASE)
+            as_regex = re.compile(r'\s+as\s+\S+\s*$', re.IGNORECASE)
+            prefix_query = query_parts[0] + " with " + as_regex.sub("", query_parts[1], re.IGNORECASE)
+
+
+            cypher_query = f'''
+                    {prefix_query} as col  
+                    call n10s.validation.shacl.validateSet(col) 
+                    yield focusNode, nodeType, propertyShape, offendingValue, resultPath, severity, resultMessage, customMessage
+                    {infix} nodeType, n10s.rdf.getIRILocalName(propertyShape) as violationType, offendingValue, 
+                           resultPath as schemaElement, n10s.rdf.getIRILocalName(severity) as severity, resultMessage as comment, 
+                           customMessage as msg
+                    '''
+        else:
+            cypher_query = f'''
+            call n10s.validation.shacl.validate() 
+            yield focusNode, nodeType, propertyShape, offendingValue, resultPath, severity, resultMessage, customMessage
+            {infix} nodeType, n10s.rdf.getIRILocalName(propertyShape) as violationType, offendingValue, 
+                   resultPath as schemaElement, n10s.rdf.getIRILocalName(severity) as severity, resultMessage as comment, 
+                   customMessage as msg
+            '''
 
         with self.__db_driver___.session(database=self.__db_name___) as session:
             results = session.read_transaction(
                 lambda tx: tx.run(cypher_query).data())
 
         return results
-
 
 class Set():
 
@@ -318,9 +336,9 @@ class Set():
             return XSD.string
 
 
-    def print_set(self):
-        print("Expectations in this Set contain " + str(len(self.g)) + " triples")
-        print(self.g.serialize(format="turtle")) #.decode('UTF-8'))
+    def print(self):
+        print("#SHACL serialization of expectations in this suite contain " + str(len(self.g)) + " triples")
+        return self.g.serialize(format="turtle")
 
     def serialise(self):
-        return self.g.serialize(format="turtle") #.decode('UTF-8')
+        return self.g.serialize(format="turtle")
